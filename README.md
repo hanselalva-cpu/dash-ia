@@ -8,7 +8,7 @@ importación CSV y conciliación contra facturas. Streamlit + Supabase.
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 streamlit run app.py
 ```
 

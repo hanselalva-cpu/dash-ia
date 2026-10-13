@@ -1,9 +1,10 @@
-streamlit>=1.40
-supabase>=2.10
-pydantic>=2.9
-pydantic-settings>=2.6
-pandas>=2.2
-plotly>=5.24
-python-dotenv>=1.0
-tzdata>=2024.1  # Windows no trae base de zonas horarias para zoneinfo
-pytest>=8.3
+# Versiones fijas (probadas local y en Streamlit Cloud). Actualizar a propósito, correr pytest y luego subir.
+streamlit==1.65.0
+supabase==2.32.0
+httpx==0.28.1
+pydantic==2.14.1
+pydantic-settings==2.15.0
+pandas==3.0.6
+plotly==7.1.0
+python-dotenv==1.2.4
+tzdata==2026.5  # Windows no trae base de zonas horarias para zoneinfo
