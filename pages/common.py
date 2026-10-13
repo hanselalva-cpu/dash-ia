@@ -19,6 +19,12 @@ def _repos(config_fingerprint: str) -> Repositories:
 @st.cache_resource(ttl="10m")
 def _connection_error(config_fingerprint: str) -> str | None:
     """Prueba barata contra Supabase; devuelve un mensaje entendible si la key/URL no sirven."""
+    from config.settings import get_settings
+
+    if not get_settings().supabase_secret_key.get_secret_value():
+        return ("**Falta `SUPABASE_SECRET_KEY`.** Con solo la *publishable key*, Supabase oculta todos los datos "
+                "(reglas RLS) y el dashboard se vería vacío. Agrégala en **Secrets** (Streamlit Cloud) o en `.env`: "
+                "es la *secret key* del proyecto y empieza con `sb_secret_`.")
     try:
         get_repositories().campaigns.list()
     except Exception as exc:  # noqa: BLE001
