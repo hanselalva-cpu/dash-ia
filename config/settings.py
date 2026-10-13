@@ -1,5 +1,4 @@
 import os
-from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from pydantic import SecretStr, ValidationError, field_validator, model_validator
@@ -111,20 +110,42 @@ def streamlit_secrets() -> dict[str, str]:
     return flat
 
 
-def _apply_streamlit_secrets() -> None:
-    """Variables de entorno ya definidas tienen prioridad; los secrets solo completan las que faltan."""
-    for key, value in streamlit_secrets().items():
-        os.environ.setdefault(key, value)
+_FROM_SECRETS: set[str] = set()  # variables de entorno que puso esta app desde st.secrets (se pueden actualizar)
+_cached: tuple[str, Settings] | None = None
 
 
-@lru_cache
+def _apply_streamlit_secrets() -> str:
+    """Copia st.secrets a variables de entorno y devuelve una huella (hash) de la configuración.
+    Variables de entorno reales tienen prioridad; las que vinieron de secrets se actualizan si cambian."""
+    import hashlib
+
+    secrets = streamlit_secrets()
+    for key, value in secrets.items():
+        if key not in os.environ or key in _FROM_SECRETS:
+            os.environ[key] = value
+            _FROM_SECRETS.add(key)
+    return hashlib.sha256(repr(sorted(secrets.items())).encode()).hexdigest()[:16]
+
+
+def config_fingerprint() -> str:
+    """Huella de la configuración vigente: cambia cuando se editan los Secrets (para invalidar cachés)."""
+    get_settings()
+    return _cached[0]
+
+
 def get_settings() -> Settings:
-    _apply_streamlit_secrets()
+    """Configuración cacheada; se reconstruye sola si cambian los Secrets de Streamlit Cloud."""
+    global _cached
+    fingerprint = _apply_streamlit_secrets()
+    if _cached is not None and _cached[0] == fingerprint:
+        return _cached[1]
     try:
-        return Settings()
+        settings = Settings()
     except ValidationError as exc:
         # El mensaje por defecto de pydantic incluye los valores leídos (keys incluidas): no exponerlos.
         problems = "; ".join(
             f"{'.'.join(map(str, e['loc'])) or 'config'}: {e['msg']}" for e in exc.errors(include_input=False)
         )
         raise RuntimeError(f"Configuración inválida (.env o Secrets) → {problems}") from None
+    _cached = (fingerprint, settings)
+    return settings

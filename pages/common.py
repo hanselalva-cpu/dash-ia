@@ -12,8 +12,15 @@ PRESETS = ["Mes actual", "Mes anterior", "Últimos 30 días", "Año actual"]
 
 
 @st.cache_resource
-def repos() -> Repositories:
+def _repos(config_fingerprint: str) -> Repositories:
     return get_repositories()
+
+
+def repos() -> Repositories:
+    """Repositorios cacheados por huella de configuración: editar Secrets no deja la app en modo viejo."""
+    from config.settings import config_fingerprint
+
+    return _repos(config_fingerprint())
 
 
 def demo_banner() -> None:
@@ -25,7 +32,8 @@ def demo_banner() -> None:
     expected = ["DEMO_MODE", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "DEFAULT_DISPLAY_CURRENCY", "USD_MXN_RATE"]
     missing = [k for k in expected if k not in found and k not in os.environ]
     lines = ["Modo demo: datos de ejemplo. Para usar Supabase define `DEMO_MODE = \"false\"` en .env (local) "
-             "o en **Secrets** (Streamlit Cloud)."]
+             "o en **Secrets** (Streamlit Cloud).",
+             f"Valor de `DEMO_MODE` que está usando la app: `{os.environ.get('DEMO_MODE', '(no definido)')}`"]
     if missing:
         lines.append("No encontradas: " + ", ".join(f"`{k}`" for k in missing))
     lines.append("Claves leídas de Secrets: " + ", ".join(f"`{k}`" for k in found) if found
