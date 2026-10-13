@@ -16,11 +16,31 @@ def _repos(config_fingerprint: str) -> Repositories:
     return get_repositories()
 
 
+@st.cache_resource(ttl="10m")
+def _connection_error(config_fingerprint: str) -> str | None:
+    """Prueba barata contra Supabase; devuelve un mensaje entendible si la key/URL no sirven."""
+    try:
+        get_repositories().campaigns.list()
+    except Exception as exc:  # noqa: BLE001
+        text = str(exc)
+        if "Invalid API key" in text or "'code': 401" in text:
+            return ("**Supabase rechazó la key (401 Invalid API key).** Revisa `SUPABASE_SECRET_KEY` en "
+                    "**Secrets** (Streamlit Cloud) o en `.env`: debe ser la *secret key* completa del proyecto, "
+                    "empieza con `sb_secret_`, sin el texto de ejemplo.")
+        return f"No se pudo conectar a Supabase: {type(exc).__name__}. Revisa `SUPABASE_URL` y la key."
+    return None
+
+
 def repos() -> Repositories:
     """Repositorios cacheados por huella de configuración: editar Secrets no deja la app en modo viejo."""
     from config.settings import config_fingerprint
 
-    return _repos(config_fingerprint())
+    fingerprint = config_fingerprint()
+    r = _repos(fingerprint)
+    if not r.demo and (error := _connection_error(fingerprint)):
+        st.error(error)
+        st.stop()
+    return r
 
 
 def demo_banner() -> None:

@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     deepgram_api_key: SecretStr = SecretStr("")
     elevenlabs_api_key: SecretStr = SecretStr("")
 
+    @field_validator("supabase_publishable_key", "supabase_secret_key", mode="before")
+    @classmethod
+    def _strip_key(cls, value):
+        """Quita espacios/saltos de línea que suelen colarse al pegar la key en Secrets o .env."""
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        return value.strip().strip('"').strip("'").strip() if isinstance(value, str) else value
+
     @field_validator("supabase_url")
     @classmethod
     def _base_url_only(cls, value: str) -> str:
