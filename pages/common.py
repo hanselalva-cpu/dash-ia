@@ -1,5 +1,6 @@
 """Utilidades compartidas por las páginas (no es una página: app.py usa st.navigation explícito)."""
 
+import os
 from datetime import date, datetime, time, timedelta
 
 import streamlit as st
@@ -16,8 +17,20 @@ def repos() -> Repositories:
 
 
 def demo_banner() -> None:
-    if repos().demo:
-        st.info("Modo demo: datos de examples/usage_demo.csv. DEMO_MODE=false en .env para usar Supabase.")
+    if not repos().demo:
+        return
+    from config.settings import streamlit_secrets
+
+    found = sorted(streamlit_secrets())
+    expected = ["DEMO_MODE", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "DEFAULT_DISPLAY_CURRENCY", "USD_MXN_RATE"]
+    missing = [k for k in expected if k not in found and k not in os.environ]
+    lines = ["Modo demo: datos de ejemplo. Para usar Supabase define `DEMO_MODE = \"false\"` en .env (local) "
+             "o en **Secrets** (Streamlit Cloud)."]
+    if missing:
+        lines.append("No encontradas: " + ", ".join(f"`{k}`" for k in missing))
+    lines.append("Claves leídas de Secrets: " + ", ".join(f"`{k}`" for k in found) if found
+                 else "No se leyó ninguna clave de Secrets.")
+    st.info("\n\n".join(lines))
 
 
 def money(amount_usd: float, decimals: int = 2) -> str:

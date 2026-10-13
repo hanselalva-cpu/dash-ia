@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
@@ -92,8 +93,33 @@ class Settings(BaseSettings):
         return bool(self.supabase_url and self.supabase_key)
 
 
+def streamlit_secrets() -> dict[str, str]:
+    """Claves de st.secrets (Streamlit Cloud → App settings → Secrets) aplanadas y en MAYÚSCULAS.
+    Acepta claves de primer nivel o dentro de una sección ([general], [supabase], …). Sin secrets → {}."""
+    try:
+        import streamlit as st
+
+        raw = st.secrets.to_dict()
+    except Exception:  # sin secrets.toml, fuera de Streamlit, etc.
+        return {}
+    flat: dict[str, str] = {}
+    for key, value in raw.items():
+        items = value.items() if isinstance(value, dict) else [(key, value)]
+        for k, v in items:
+            if isinstance(v, (str, int, float, bool)):
+                flat.setdefault(k.upper(), str(v).lower() if isinstance(v, bool) else str(v))
+    return flat
+
+
+def _apply_streamlit_secrets() -> None:
+    """Variables de entorno ya definidas tienen prioridad; los secrets solo completan las que faltan."""
+    for key, value in streamlit_secrets().items():
+        os.environ.setdefault(key, value)
+
+
 @lru_cache
 def get_settings() -> Settings:
+    _apply_streamlit_secrets()
     try:
         return Settings()
     except ValidationError as exc:
@@ -101,4 +127,4 @@ def get_settings() -> Settings:
         problems = "; ".join(
             f"{'.'.join(map(str, e['loc'])) or 'config'}: {e['msg']}" for e in exc.errors(include_input=False)
         )
-        raise RuntimeError(f"Configuración inválida en .env → {problems}") from None
+        raise RuntimeError(f"Configuración inválida (.env o Secrets) → {problems}") from None
