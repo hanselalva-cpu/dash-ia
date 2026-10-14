@@ -47,7 +47,13 @@ class AgentRate:
 
 def _get(client: httpx.Client, path: str, params: dict | None = None, retries: int = 6) -> dict:
     for attempt in range(retries):
-        r = client.get(path, params=params)
+        try:
+            r = client.get(path, params=params)
+        except httpx.TransportError:  # timeouts / cortes de red: reintentar
+            if attempt == retries - 1:
+                raise
+            time.sleep(min(2**attempt, 30))
+            continue
         if r.status_code == 429 or r.status_code >= 500:
             time.sleep(min(2**attempt, 30))
             continue
@@ -207,7 +213,11 @@ def fetch_events(api_key: str, start: datetime, end: datetime, sample: int = 100
         rates: dict[tuple[str, date], AgentRate] = {}
         t0 = time.time()
         for i, (agent, day) in enumerate(todo, 1):
-            rate = measure_rate(client, sample_conversations(client, ids[agent], day), sample, rng)
+            try:
+                rate = measure_rate(client, sample_conversations(client, ids[agent], day), sample, rng)
+            except httpx.HTTPError as exc:  # un día-agente fallido no tumba la corrida: usa el día más cercano
+                log(f"[{i}/{len(todo)}] {day} {agent}: error {type(exc).__name__}, se usará el día más cercano")
+                continue
             if rate:
                 rates[(agent, day)] = rate
             log(f"[{i}/{len(todo)}] {day} {agent}: "
@@ -227,6 +237,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Sincroniza costo diario por agente de ElevenLabs (estimado)")
     parser.add_argument("--days", type=int, default=3)
     parser.add_argument("--since", type=date.fromisoformat, help="fecha inicial YYYY-MM-DD (ignora --days)")
+    parser.add_argument("--until", type=date.fromisoformat, help="fecha final exclusiva YYYY-MM-DD (default: ahora)")
     parser.add_argument("--sample", type=int, default=100, help="conversaciones a medir por agente y día")
     parser.add_argument("--dry-run", action="store_true", help="descarga y resume, no guarda en Supabase")
     args = parser.parse_args()
@@ -234,7 +245,8 @@ def main() -> None:
     api_key = get_settings().elevenlabs_api_key.get_secret_value()
     if not api_key:
         raise SystemExit("Falta ELEVENLABS_API_KEY en .env")
-    end = datetime.now(timezone.utc)
+    end = (datetime.combine(args.until, datetime.min.time(), tzinfo=timezone.utc) if args.until
+           else datetime.now(timezone.utc))
     start = (datetime.combine(args.since, datetime.min.time(), tzinfo=timezone.utc) if args.since
              else datetime.combine((end - timedelta(days=args.days)).date(), datetime.min.time(), tzinfo=timezone.utc))
 
