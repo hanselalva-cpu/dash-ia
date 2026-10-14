@@ -31,6 +31,13 @@ class SupabaseUsageRepository:
             saved += len(self.client.table(TABLE).upsert(batch, on_conflict="provider,external_id").execute().data)
         return saved
 
+    def delete_provider_sync(self, provider, start: datetime, end: datetime) -> None:
+        """Borra registros sincronizados de un proveedor en [start, end) antes de reemplazarlos."""
+        (self.client.table(TABLE).delete()
+         .eq("provider", str(provider)).eq("source", "provider_sync")
+         .gte("occurred_at", start.isoformat()).lt("occurred_at", end.isoformat())
+         .execute())
+
     def list(self, start: datetime, end: datetime, page_size: int = 1000) -> list[UsageEvent]:
         # PostgREST corta en 1000 filas por respuesta: paginar con range().
         rows, offset = [], 0
@@ -69,6 +76,9 @@ class DemoUsageRepository:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
 
     def upsert_many(self, events: list[UsageEvent]) -> int:
+        raise NotImplementedError("Modo demo: configura Supabase para escribir")
+
+    def delete_provider_sync(self, provider, start: datetime, end: datetime) -> None:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
 
     def list(self, start: datetime, end: datetime) -> list[UsageEvent]:

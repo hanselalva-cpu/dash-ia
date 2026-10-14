@@ -88,7 +88,12 @@ else:
                      category_orders={"campaña": present},
                      custom_data=["campaña"])
         fig.update_traces(hovertemplate=f"%{{x|%d %b}} · %{{customdata[0]}}<br><b>$%{{y:,.2f}} {currency}</b><extra></extra>")
-        st.plotly_chart(style_fig(fig), width="stretch")
+        fig = style_fig(fig)
+        # Eje siempre en días: con pocos días Plotly mostraba horas/milisegundos ("23:59:59.9996").
+        fig.update_xaxes(type="date", tickformat="%d %b", dtick=86_400_000,
+                         range=[pd.Timestamp(start.date()) - pd.Timedelta(hours=12),
+                                pd.Timestamp((end - pd.Timedelta(days=1)).date()) + pd.Timedelta(hours=12)])
+        st.plotly_chart(fig, width="stretch")
 
     # --- Total por campaña (clic = detalle) ---------------------------------------------------------------
     with st.container(border=True):
