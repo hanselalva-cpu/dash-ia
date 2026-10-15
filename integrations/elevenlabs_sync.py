@@ -34,6 +34,9 @@ LLM_SUFFIX = " (LLM)"
 UNKNOWN = "Unknown Resource"
 SAMPLE_WINDOWS = 8  # ventanas del día de donde se toman conversaciones, para no sesgar a una sola hora
 Q = Decimal("0.00000001")
+# Conversaciones previas a ~julio-2026 no traen metadata.cost_fiat, solo créditos (metadata.cost).
+# Equivalencia medida en conversaciones que traen ambos: 0.09227/926, 0.0127/128, 0.0185/186 ≈ 99.6 µUSD.
+USD_PER_CREDIT = Decimal("0.0000996")
 
 
 @dataclass
@@ -108,10 +111,14 @@ def measure_rate(client: httpx.Client, summaries: list[dict], max_n: int, rng: r
             meta = _get(client, f"/v1/convai/conversations/{s['conversation_id']}").get("metadata") or {}
         except httpx.HTTPError:
             continue
-        if meta.get("cost_fiat") is None:
+        if meta.get("cost_fiat") is not None:
+            conv_cost = Decimal(str(meta["cost_fiat"]))
+        elif meta.get("cost") is not None:
+            conv_cost = Decimal(str(meta["cost"])) * USD_PER_CREDIT  # conversaciones antiguas sin cost_fiat
+        else:
             continue
         charging = meta.get("charging") or {}
-        cost += Decimal(str(meta["cost_fiat"]))
+        cost += conv_cost
         llm += Decimal(str(charging.get("llm_price") or 0))
         secs += Decimal(str(s["call_duration_secs"]))
         n += 1
