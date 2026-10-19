@@ -31,12 +31,15 @@ class SupabaseUsageRepository:
             saved += len(self.client.table(TABLE).upsert(batch, on_conflict="provider,external_id").execute().data)
         return saved
 
-    def delete_provider_sync(self, provider, start: datetime, end: datetime) -> None:
-        """Borra registros sincronizados de un proveedor en [start, end) antes de reemplazarlos."""
-        (self.client.table(TABLE).delete()
-         .eq("provider", str(provider)).eq("source", "provider_sync")
-         .gte("occurred_at", start.isoformat()).lt("occurred_at", end.isoformat())
-         .execute())
+    def delete_provider_sync(self, provider, start: datetime, end: datetime, metadata: dict | None = None) -> None:
+        """Borra registros sincronizados de un proveedor en [start, end) antes de reemplazarlos.
+        `metadata` limita el borrado a registros con esos valores (ej. {"component": "voice_library"})."""
+        q = (self.client.table(TABLE).delete()
+             .eq("provider", str(provider)).eq("source", "provider_sync")
+             .gte("occurred_at", start.isoformat()).lt("occurred_at", end.isoformat()))
+        for key, value in (metadata or {}).items():
+            q = q.eq(f"metadata->>{key}", value)
+        q.execute()
 
     def list(self, start: datetime, end: datetime, page_size: int = 1000) -> list[UsageEvent]:
         # PostgREST corta en 1000 filas por respuesta: paginar con range().
@@ -78,7 +81,7 @@ class DemoUsageRepository:
     def upsert_many(self, events: list[UsageEvent]) -> int:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
 
-    def delete_provider_sync(self, provider, start: datetime, end: datetime) -> None:
+    def delete_provider_sync(self, provider, start: datetime, end: datetime, metadata: dict | None = None) -> None:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
 
     def list(self, start: datetime, end: datetime) -> list[UsageEvent]:

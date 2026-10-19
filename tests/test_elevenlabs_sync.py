@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from integrations.elevenlabs_sync import UNKNOWN, AgentRate, build_catalog, build_events
+from integrations.elevenlabs_sync import UNKNOWN, AgentRate, VoiceInfo, build_catalog, build_events
 from models.schemas import UsageSource, UsageUnit
 
 D13, D14, D20 = date(2026, 10, 13), date(2026, 10, 14), date(2026, 10, 20)
@@ -33,10 +33,22 @@ def test_agent_without_any_rate_is_flagged_with_zero_cost():
     assert all(e.cost_usd == 0 and e.metadata["missing_rate"] for e in events)
 
 
-def test_unknown_resource_kept_with_zero_cost_and_credits():
-    events = build_events({(UNKNOWN, D13): 0.0}, {}, {D13: 483361.0})
-    assert len(events) == 1
-    assert events[0].cost_usd == 0 and events[0].metadata["credits"] == 483361.0
+def test_voice_library_surcharge_split_by_minutes_among_library_voices():
+    voices = {"R7": VoiceInfo("Gaby", "v1", True), "CCU": VoiceInfo("Antonio", "v2", True),
+              "Propia": VoiceInfo("Mi voz", "v3", False)}
+    minutes = {("R7", D13): 900.0, ("CCU", D13): 100.0, ("Propia", D13): 500.0}
+    events = [e for e in build_events(minutes, {}, {D13: 100000.0}, voices) if e.metadata["component"] == "voice_library"]
+    by = {e.metadata["agent_name"]: e for e in events}
+    assert set(by) == {"R7", "CCU"}  # la voz propia no genera recargo
+    assert by["R7"].cost_usd == Decimal("8.964") and by["CCU"].cost_usd == Decimal("0.996")  # 100k créd × 0.0000996
+    assert by["R7"].metadata["voice_name"] == "Gaby"
+    assert by["R7"].external_id == "resource:2026-10-13:R7 (Voice Library)"
+
+
+def test_surcharge_without_library_agents_stays_unassigned():
+    events = build_events({}, {}, {D13: 483361.0})
+    assert len(events) == 1 and events[0].metadata["agent_name"] == UNKNOWN
+    assert events[0].cost_usd == Decimal("48.14275560")
     assert events[0].external_id == f"resource:2026-10-13:{UNKNOWN}"
 
 

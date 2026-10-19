@@ -33,9 +33,11 @@ total_all = df["cost"].sum()
 events = attribute_campaigns(repos().usage.list(start, end), repos().resources.list())
 seconds = pd.DataFrame([
     {"provider": str(e.provider), "recurso": e.metadata.get("agent_name") or e.metadata.get("key_name"),
-     "component": e.metadata.get("component"), "secs": float(e.quantities.get(UsageUnit.AUDIO_SECONDS, 0))}
+     "component": e.metadata.get("component"), "secs": float(e.quantities.get(UsageUnit.AUDIO_SECONDS, 0)),
+     "voice": e.metadata.get("voice_name")}
     for e in events
 ])
+COMPONENT_LABEL = {"convai_voice": "Llamada", "convai_llm": "LLM", "convai_voice_library_surcharge": "Recargo voz"}
 
 
 def fmt(v: float) -> str:
@@ -107,42 +109,84 @@ with tab_oa:
 
 # --- ElevenLabs -----------------------------------------------------------------------------------------------
 with tab_el:
-    part = df[df["provider"] == "elevenlabs"]
+    part = df[df["provider"] == "elevenlabs"].assign(componente=lambda d: d["model"].map(COMPONENT_LABEL).fillna("Otros"))
     if part.empty:
         st.info("Sin gasto de ElevenLabs en el periodo.")
     else:
-        el_secs = seconds[(seconds["provider"] == "elevenlabs") & (seconds["component"] == "voice")]
-        minutes = el_secs.groupby("recurso")["secs"].sum() / 60
+        el = seconds[seconds["provider"] == "elevenlabs"]
+        minutes = el[el["component"] == "voice"].groupby("recurso")["secs"].sum() / 60
+        voice_of = el.dropna(subset=["voice"]).groupby("recurso")["voice"].last()
         total_min = minutes.sum()
+        surcharge_total = part.loc[part["componente"] == "Recargo voz", "cost"].sum()
         kpis(part, ("Minutos de llamada", f"{total_min:,.0f}"))
+
         with st.container(border=True):
-            st.markdown("**Gasto diario por agente**")
-            st.plotly_chart(daily_by_resource(part), width="stretch", key="el_daily")
+            st.markdown("**Gasto diario por componente**")
+            daily = part.groupby(["día", "componente"])["cost"].sum().reset_index()
+            comp_colors = {"Llamada": CATEGORICAL_LIGHT[0], "LLM": CATEGORICAL_LIGHT[1],
+                           "Recargo voz": CATEGORICAL_LIGHT[3], "Otros": NEUTRAL["light"]}
+            fig = px.bar(daily, x="día", y="cost", color="componente", color_discrete_map=comp_colors,
+                         category_orders={"componente": ["Llamada", "LLM", "Recargo voz", "Otros"]})
+            fig.update_traces(hovertemplate=f"%{{x|%d %b}} · %{{fullData.name}}<br><b>$%{{y:,.2f}} {currency}</b><extra></extra>")
+            fig = style_fig(fig)
+            fig.update_xaxes(type="date", tickformat="%d %b", dtick=86_400_000 if days <= 31 else None)
+            st.plotly_chart(fig, width="stretch", key="el_daily_comp")
+
+        with st.container(border=True):
+            st.markdown("**Por agente: gasto completo** (llamada + LLM + recargo de voz)")
+            pivot = (part.pivot_table(index=["recurso", "campaign"], columns="componente", values="cost",
+                                      aggfunc="sum", fill_value=0)
+                     .reindex(columns=["Llamada", "LLM", "Recargo voz"], fill_value=0).reset_index())
+            pivot["Total"] = pivot[["Llamada", "LLM", "Recargo voz"]].sum(axis=1)
+            pivot = pivot[pivot["Total"] > 0.005].sort_values("Total", ascending=False)
+            pivot["Voz"] = pivot["recurso"].map(voice_of).fillna("—")
+            pivot["Minutos"] = pivot["recurso"].map(minutes).fillna(0)
+            pivot[f"{currency}/min"] = pivot["Total"] / pivot["Minutos"].where(pivot["Minutos"] > 0)
+            pivot["%"] = pivot["Total"] / pivot["Total"].sum() * 100
+            st.dataframe(
+                pivot.rename(columns={"recurso": "Agente", "campaign": "Campaña"})[
+                    ["Agente", "Campaña", "Voz", "Llamada", "LLM", "Recargo voz", "Total", "Minutos",
+                     f"{currency}/min", "%"]],
+                hide_index=True, width="stretch",
+                column_config={"Llamada": MONEY, "LLM": MONEY, "Recargo voz": MONEY, "Total": MONEY,
+                               "Minutos": st.column_config.NumberColumn(format="%,.0f"),
+                               f"{currency}/min": st.column_config.NumberColumn(format="$%.3f"),
+                               "%": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)})
+
         c1, c2 = st.columns([3, 2])
         with c1.container(border=True):
-            st.markdown("**Por agente**")
-            llm = part[part["model"] == "convai_llm"].groupby("recurso")["cost"].sum().rename("LLM")
-            extra = pd.concat([minutes.rename("Minutos"), llm], axis=1).reset_index(names="recurso")
-            table = resource_table(part, extra)
-            table[f"{currency}/min"] = table[f"Gasto ({currency})"] / table["Minutos"]
-            st.dataframe(table, hide_index=True, width="stretch",
-                         column_config={f"Gasto ({currency})": MONEY, "LLM": MONEY,
-                                        "Minutos": st.column_config.NumberColumn(format="%,.0f"),
-                                        f"{currency}/min": st.column_config.NumberColumn(format="$%.3f"),
-                                        "%": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)})
+            st.markdown("**Voces que cobran recargo** (Voice Library)")
+            sur = part[part["componente"] == "Recargo voz"]
+            if sur.empty:
+                st.caption("Sin recargo de voz en el periodo.")
+            else:
+                voices = (sur.assign(voz=sur["recurso"].map(voice_of).fillna("(sin identificar)"))
+                          .groupby("voz").agg(recargo=("cost", "sum"),
+                                              agentes=("recurso", lambda r: ", ".join(sorted(set(r)))))
+                          .reset_index())
+                voices["Minutos"] = voices["agentes"].map(
+                    lambda a: sum(minutes.get(x.strip(), 0) for x in a.split(",")))
+                voices[f"Recargo {currency}/min"] = voices["recargo"] / voices["Minutos"].where(voices["Minutos"] > 0)
+                st.dataframe(voices.sort_values("recargo", ascending=False).rename(
+                                 columns={"voz": "Voz", "agentes": "Agentes", "recargo": f"Recargo ({currency})"}),
+                             hide_index=True, width="stretch",
+                             column_config={f"Recargo ({currency})": MONEY,
+                                            "Minutos": st.column_config.NumberColumn(format="%,.0f"),
+                                            f"Recargo {currency}/min": st.column_config.NumberColumn(format="$%.4f")})
         with c2.container(border=True):
-            st.markdown("**Llamada vs. LLM**")
-            split = part.assign(componente=part["model"].map({"convai_voice": "Llamada (voz)", "convai_llm": "LLM"})
-                                .fillna("Otros")).groupby("componente")["cost"].sum().reset_index()
-            fig = px.pie(split, names="componente", values="cost", hole=0.55,
-                         color="componente", color_discrete_map={"Llamada (voz)": CATEGORICAL_LIGHT[0],
-                                                                 "LLM": CATEGORICAL_LIGHT[1], "Otros": NEUTRAL["light"]})
+            st.markdown("**Reparto del gasto**")
+            split = part.groupby("componente")["cost"].sum().reset_index()
+            fig = px.pie(split, names="componente", values="cost", hole=0.55, color="componente",
+                         color_discrete_map={"Llamada": CATEGORICAL_LIGHT[0], "LLM": CATEGORICAL_LIGHT[1],
+                                             "Recargo voz": CATEGORICAL_LIGHT[3], "Otros": NEUTRAL["light"]})
             fig.update_traces(textinfo="percent+label",
                               hovertemplate=f"%{{label}}<br><b>$%{{value:,.2f}} {currency}</b><extra></extra>")
             st.plotly_chart(style_fig(fig, height=300).update_layout(showlegend=False), width="stretch", key="el_pie")
-        st.caption("Estimado: minutos de cada agente × costo por minuto medido en una muestra diaria de conversaciones "
-                   "(coincide con el panel de ElevenLabs a menos de 1 %). El recargo de Voice Library "
-                   "(\"Unknown Resource\") aparece en $0 hasta validarlo con factura.")
+
+        st.caption("**Llamada y LLM:** minutos de cada agente × costo por minuto medido en una muestra diaria de "
+                   "conversaciones (coincide con el panel de ElevenLabs a menos de 1 %). **Recargo voz:** cargo de "
+                   "ElevenLabs por usar voces de la Voice Library, que se cobra aparte; se reparte entre los agentes "
+                   "con esa voz según sus minutos. La voz es la configurada hoy en cada agente.")
 
 # --- Deepgram -------------------------------------------------------------------------------------------------
 with tab_dg:

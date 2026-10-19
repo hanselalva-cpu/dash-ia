@@ -32,6 +32,7 @@ from models.schemas import Provider, ProviderResource, ResourceKind, UsageEvent,
 BASE_URL = "https://api.elevenlabs.io"
 LLM_SUFFIX = " (LLM)"
 UNKNOWN = "Unknown Resource"
+VOICE_LIBRARY_SUFFIX = " (Voice Library)"
 SAMPLE_WINDOWS = 8  # ventanas del día de donde se toman conversaciones, para no sesgar a una sola hora
 Q = Decimal("0.00000001")
 # Conversaciones previas a ~julio-2026 no traen metadata.cost_fiat, solo créditos (metadata.cost).
@@ -138,14 +139,60 @@ def nearest_rate(rates: dict[tuple[str, date], AgentRate], agent: str, day: date
 
 
 # --- Registros ------------------------------------------------------------------------------------------------
+@dataclass
+class VoiceInfo:
+    name: str
+    voice_id: str
+    library: bool  # voz copiada de la Voice Library → genera recargo
+
+
+def build_surcharge_events(minutes: dict[tuple[str, date], float], surcharge_credits: dict[date, float],
+                           voices: dict[str, VoiceInfo]) -> list[UsageEvent]:
+    """Recargo Voice Library: ElevenLabs lo cobra aparte ("Unknown Resource"), no dentro del costo de cada
+    conversación. Se reparte cada día entre los agentes con voz de biblioteca según sus minutos.
+    Si ese día ningún agente con voz de biblioteca tuvo minutos, queda como "Unknown Resource" sin agente."""
+    events = []
+    for day, credits in sorted(surcharge_credits.items()):
+        if not credits:
+            continue
+        usd = Decimal(str(credits)) * USD_PER_CREDIT
+        users = {a: m for (a, d), m in minutes.items()
+                 if d == day and m and a in voices and voices[a].library}
+        total_min = sum(users.values())
+        if not total_min:
+            events.append(UsageEvent(
+                occurred_at=day_anchor(day), provider=Provider.ELEVENLABS, model="convai_voice_library_surcharge",
+                cost_usd=usd.quantize(Q), source=UsageSource.PROVIDER_SYNC,
+                external_id=f"resource:{day.isoformat()}:{UNKNOWN}",
+                metadata={"agent_name": UNKNOWN, "component": "voice_library", "granularity": "day",
+                          "credits": credits, "estimated": True},
+            ))
+            continue
+        for agent, mins in sorted(users.items()):
+            share = Decimal(str(mins)) / Decimal(str(total_min))
+            events.append(UsageEvent(
+                occurred_at=day_anchor(day), provider=Provider.ELEVENLABS, model="convai_voice_library_surcharge",
+                cost_usd=(usd * share).quantize(Q), source=UsageSource.PROVIDER_SYNC,
+                external_id=f"resource:{day.isoformat()}:{agent}{VOICE_LIBRARY_SUFFIX}",
+                metadata={"agent_name": agent, "component": "voice_library", "granularity": "day",
+                          "voice_name": voices[agent].name, "voice_id": voices[agent].voice_id,
+                          "credits": float(Decimal(str(credits)) * share), "share": float(share), "estimated": True},
+            ))
+    return events
+
+
 def build_events(minutes: dict[tuple[str, date], float], rates: dict[tuple[str, date], AgentRate],
-                 unknown_credits: dict[date, float] | None = None) -> list[UsageEvent]:
+                 surcharge_credits: dict[date, float] | None = None,
+                 voices: dict[str, VoiceInfo] | None = None) -> list[UsageEvent]:
+    voices = voices or {}
     events = []
     for (agent, day), mins in sorted(minutes.items()):
         if agent.endswith(LLM_SUFFIX) or agent == UNKNOWN or not mins:
             continue
         found = (rates[(agent, day)], day) if (agent, day) in rates else nearest_rate(rates, agent, day)
         meta = {"agent_name": agent, "granularity": "day", "estimated": True, "minutes": mins}
+        if agent in voices:
+            meta |= {"voice_name": voices[agent].name, "voice_library": voices[agent].library}
         if found:
             rate, rate_day = found
             total = (rate.per_min_total * Decimal(str(mins))).quantize(Q)
@@ -167,15 +214,7 @@ def build_events(minutes: dict[tuple[str, date], float], rates: dict[tuple[str, 
                 external_id=f"resource:{day.isoformat()}:{agent}{suffix}",
                 metadata=meta | {"component": component},
             ))
-    for day, credits in sorted((unknown_credits or {}).items()):
-        events.append(UsageEvent(
-            occurred_at=day_anchor(day), provider=Provider.ELEVENLABS, model="convai_voice_library_surcharge",
-            cost_usd=Decimal(0), source=UsageSource.PROVIDER_SYNC,
-            external_id=f"resource:{day.isoformat()}:{UNKNOWN}",
-            metadata={"agent_name": UNKNOWN, "component": "voice", "granularity": "day", "credits": credits,
-                      "pending_validation": "recargo Voice Library: costo no medible con precisión vía API"},
-        ))
-    return events
+    return events + build_surcharge_events(minutes, surcharge_credits or {}, voices)
 
 
 def fetch_agents(client: httpx.Client) -> list[dict]:
@@ -186,6 +225,26 @@ def fetch_agents(client: httpx.Client) -> list[dict]:
         if not page.get("has_more") or not page.get("next_cursor"):
             return agents
         params["cursor"] = page["next_cursor"]
+
+
+def fetch_agent_voices(client: httpx.Client, ids: dict[str, str], names: set[str]) -> dict[str, VoiceInfo]:
+    """Voz actual de cada agente (configuración de hoy: no hay historial de voces por API)."""
+    voices, cache = {}, {}
+    for name in sorted(names):
+        if name not in ids:
+            continue
+        try:
+            tts = (_get(client, f"/v1/convai/agents/{ids[name]}").get("conversation_config") or {}).get("tts") or {}
+            vid = tts.get("voice_id")
+            if not vid:
+                continue
+            if vid not in cache:
+                v = _get(client, f"/v1/voices/{vid}")
+                cache[vid] = VoiceInfo(v.get("name") or vid, vid, (v.get("sharing") or {}).get("status") == "copied")
+            voices[name] = cache[vid]
+        except httpx.HTTPError:
+            continue
+    return voices
 
 
 def build_catalog(agents: list[dict], events: list[UsageEvent]) -> list[ProviderResource]:
@@ -230,9 +289,22 @@ def fetch_events(api_key: str, start: datetime, end: datetime, sample: int = 100
             log(f"[{i}/{len(todo)}] {day} {agent}: "
                 + (f"${rate.per_min_total:.4f}/min (n={rate.sample_size})" if rate else "sin muestra")
                 + f" · {time.time() - t0:.0f}s")
-    unknown = {d: c for (a, d), c in credits.items() if a == UNKNOWN}
-    events = build_events(minutes, rates, unknown)
+        voices = fetch_agent_voices(client, ids, {a for (a, _), m in minutes.items() if m})
+    surcharge = {d: c for (a, d), c in credits.items() if a == UNKNOWN}
+    events = build_events(minutes, rates, surcharge, voices)
     return events, build_catalog(agents, events)
+
+
+def fetch_surcharge_events(api_key: str, start: datetime, end: datetime) -> list[UsageEvent]:
+    """Solo el recargo Voice Library (sin muestrear conversaciones): minutos + créditos + voces."""
+    with httpx.Client(base_url=BASE_URL, headers={"xi-api-key": api_key}, timeout=60) as client:
+        minutes = fetch_daily_stats(client, "minutes_used", start, end)
+        credits = fetch_daily_stats(client, "credits", start, end)
+        ids = {}
+        for a in fetch_agents(client):
+            ids.setdefault(a.get("name"), a["agent_id"])
+        voices = fetch_agent_voices(client, ids, {a for (a, _), m in minutes.items() if m})
+    return build_surcharge_events(minutes, {d: c for (a, d), c in credits.items() if a == UNKNOWN}, voices)
 
 
 def main() -> None:
@@ -247,6 +319,8 @@ def main() -> None:
     parser.add_argument("--until", type=date.fromisoformat, help="fecha final exclusiva YYYY-MM-DD (default: ahora)")
     parser.add_argument("--sample", type=int, default=100, help="conversaciones a medir por agente y día")
     parser.add_argument("--dry-run", action="store_true", help="descarga y resume, no guarda en Supabase")
+    parser.add_argument("--only-surcharge", action="store_true",
+                        help="recalcula solo el recargo Voice Library (rápido, no muestrea conversaciones)")
     args = parser.parse_args()
 
     api_key = get_settings().elevenlabs_api_key.get_secret_value()
@@ -256,6 +330,23 @@ def main() -> None:
            else datetime.now(timezone.utc))
     start = (datetime.combine(args.since, datetime.min.time(), tzinfo=timezone.utc) if args.since
              else datetime.combine((end - timedelta(days=args.days)).date(), datetime.min.time(), tzinfo=timezone.utc))
+
+    if args.only_surcharge:
+        events = fetch_surcharge_events(api_key, start, end)
+        saved = 0
+        if not args.dry_run:
+            repos = get_repositories()
+            repos.usage.delete_provider_sync(Provider.ELEVENLABS, start, end, {"agent_name": UNKNOWN})
+            repos.usage.delete_provider_sync(Provider.ELEVENLABS, start, end, {"component": "voice_library"})
+            saved = repos.usage.upsert_many(events)
+        by = Counter()
+        for e in events:
+            by[f"{e.metadata['agent_name']} · {e.metadata.get('voice_name', '—')}"] += float(e.cost_usd)
+        dry = " (dry-run)" if args.dry_run else ""
+        print(f"Recargo Voice Library: {len(events)} registros · guardados {saved}{dry}")
+        for name, usd in by.most_common():
+            print(f"  {usd:>12,.2f} USD  {name}")
+        return
 
     events, catalog = fetch_events(api_key, start, end, args.sample)
     saved = 0
