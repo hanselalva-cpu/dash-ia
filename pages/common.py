@@ -17,9 +17,16 @@ def _repos(config_fingerprint: str, code_version: str) -> Repositories:
 
 
 def _code_version() -> str:
-    """Campos actuales de Repositories. Streamlit Cloud aplica un push sin reiniciar el proceso y
-    st.cache_resource conservaría el objeto creado con el código anterior (p. ej. sin `balances`)."""
-    return ",".join(Repositories.__dataclass_fields__)
+    """Huella del código de repositories/. Streamlit Cloud aplica un push sin reiniciar el proceso y
+    st.cache_resource conservaría objetos creados con el código anterior (métodos o campos viejos)."""
+    import hashlib
+    from pathlib import Path
+
+    folder = Path(__file__).resolve().parent.parent / "repositories"
+    digest = hashlib.sha256()
+    for file in sorted(folder.glob("*.py")):
+        digest.update(file.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 @st.cache_resource(ttl="10m")
