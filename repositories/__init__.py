@@ -12,6 +12,7 @@ class Repositories:
     usage: Any
     resources: Any
     alerts: Any
+    balances: Any
     demo: bool
 
 
@@ -22,6 +23,7 @@ def get_repositories() -> Repositories:
         if not settings.supabase_configured:
             raise RuntimeError("DEMO_MODE=false pero faltan SUPABASE_URL y SUPABASE_PUBLISHABLE_KEY/SECRET_KEY en .env")
         from repositories.alert_repository import SupabaseAlertRepository
+        from repositories.balance_repository import SupabaseBalanceRepository
         from repositories.api_key_repository import SupabaseApiKeyRepository
         from repositories.campaign_repository import SupabaseCampaignRepository
         from repositories.rate_repository import SupabaseRateRepository
@@ -37,10 +39,12 @@ def get_repositories() -> Repositories:
             SupabaseUsageRepository(client),
             SupabaseResourceRepository(client),
             SupabaseAlertRepository(client),
+            SupabaseBalanceRepository(client),
             demo=False,
         )
 
     from repositories.alert_repository import DemoAlertRepository
+    from repositories.balance_repository import DemoBalanceRepository
     from repositories.api_key_repository import DemoApiKeyRepository
     from repositories.campaign_repository import DemoCampaignRepository
     from repositories.rate_repository import DemoRateRepository
@@ -49,5 +53,5 @@ def get_repositories() -> Repositories:
 
     return Repositories(
         DemoCampaignRepository(), DemoApiKeyRepository(), DemoRateRepository(), DemoUsageRepository(),
-        DemoResourceRepository(), DemoAlertRepository(), demo=True,
+        DemoResourceRepository(), DemoAlertRepository(), DemoBalanceRepository(), demo=True,
     )

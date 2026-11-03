@@ -40,3 +40,19 @@ def test_missing_rate_flagged():
     e = build_events(RESULTS, {}, {}, [])[0]
     assert e.cost_usd == 0 and e.metadata["missing_rates"] == ["audio_seconds"]
     assert e.metadata["key_name"] == "k1" and e.model == "uuid-n3"
+
+
+def test_measured_usd_per_hour_replaces_table_rate_with_nearest_day():
+    from integrations.deepgram_sync import apply_measured_rates
+
+    rows = [
+        {"hours": 2.0, "requests": 10, "grouping": {"start": "2026-10-10", "accessor": "k1", "models": ["uuid-n3"], "method": "sync"}},
+        {"hours": 1.0, "requests": 5, "grouping": {"start": "2026-10-11", "accessor": "k1", "models": ["uuid-n3"], "method": "sync"}},
+        {"hours": 1.0, "requests": 5, "grouping": {"start": "2026-10-10", "accessor": "k2", "models": ["uuid-n3"], "method": "sync"}},
+    ]
+    events = build_events(rows, {}, {"uuid-n3": "nova-3-general"}, [RATE])
+    events = apply_measured_rates(events, {("k1", date(2026, 10, 10)): Decimal("0.39")})
+    k1_d10, k1_d11, k2 = events
+    assert k1_d10.cost_usd == Decimal("0.78") and k1_d10.metadata["cost_source"] == "requests_usd"
+    assert k1_d11.cost_usd == Decimal("0.39") and k1_d11.metadata["rate_from_day"] == "2026-10-10"
+    assert k2.metadata["cost_source"] == "rates_table" and k2.cost_usd == Decimal("0.258")  # tabla: 60 min × 0.0043

@@ -34,7 +34,8 @@ events = attribute_campaigns(repos().usage.list(start, end), repos().resources.l
 seconds = pd.DataFrame([
     {"provider": str(e.provider), "recurso": e.metadata.get("agent_name") or e.metadata.get("key_name"),
      "component": e.metadata.get("component"), "secs": float(e.quantities.get(UsageUnit.AUDIO_SECONDS, 0)),
-     "voice": e.metadata.get("voice_name")}
+     "voice": e.metadata.get("voice_name"), "requests": float(e.metadata.get("requests") or 0),
+     "usd_per_hour": e.metadata.get("usd_per_hour"), "cost_source": e.metadata.get("cost_source")}
     for e in events
 ])
 COMPONENT_LABEL = {"convai_voice": "Llamada", "convai_llm": "LLM", "convai_voice_library_surcharge": "Recargo voz"}
@@ -194,17 +195,46 @@ with tab_dg:
     if part.empty:
         st.info("Sin gasto de Deepgram en el periodo.")
     else:
-        hours = seconds[seconds["provider"] == "deepgram"].groupby("recurso")["secs"].sum() / 3600
-        kpis(part, ("Horas transcritas", f"{hours.sum():,.1f}"))
+        dg = seconds[seconds["provider"] == "deepgram"]
+        hours = dg.groupby("recurso")["secs"].sum() / 3600
+        requests = dg.groupby("recurso")["requests"].sum()
+        balances = repos().balances.history("deepgram", start - pd.Timedelta(days=60))
+        with st.container(horizontal=True):
+            total = part["cost"].sum()
+            st.metric("Gasto del periodo", fmt(total), border=True)
+            st.metric("Promedio diario", fmt(total / days), border=True)
+            st.metric("Horas transcritas", f"{hours.sum():,.1f}", border=True)
+            st.metric("Peticiones", f"{requests.sum():,.0f}", border=True)
+            if balances:
+                last = balances[-1]
+                st.metric("Saldo en cuenta", f"${float(last['amount_usd']) * rate:,.2f} {currency}", border=True,
+                          help=f"Saldo prepagado reportado por Deepgram al sincronizar ({str(last['captured_at'])[:16]} UTC).")
         with st.container(border=True):
             st.markdown("**Gasto diario por API key**")
             st.plotly_chart(daily_by_resource(part), width="stretch", key="dg_daily")
         with st.container(border=True):
-            st.markdown("**Por API key**")
-            table = resource_table(part, hours.rename("Horas").rename_axis("recurso").reset_index())
+            st.markdown("**Actividad por API key**")
+            table = resource_table(part, pd.DataFrame({"Horas": hours, "Peticiones": requests})
+                                   .rename_axis("recurso").reset_index())
+            table[f"{currency}/hora"] = table[f"Gasto ({currency})"] / table["Horas"].where(table["Horas"] > 0)
+            table["Seg. por petición"] = table["Horas"] * 3600 / table["Peticiones"].where(table["Peticiones"] > 0)
             st.dataframe(table, hide_index=True, width="stretch",
                          column_config={f"Gasto ({currency})": MONEY,
                                         "Horas": st.column_config.NumberColumn(format="%,.1f"),
+                                        "Peticiones": st.column_config.NumberColumn(format="%,.0f"),
+                                        f"{currency}/hora": st.column_config.NumberColumn(format="$%.2f"),
+                                        "Seg. por petición": st.column_config.NumberColumn(format="%.1f"),
                                         "%": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)})
-        st.caption("Horas exactas de la API de Deepgram × tarifa cargada en `rates` "
-                   "(Deepgram no da el monto por key).")
+        if len(balances) > 1:
+            with st.container(border=True):
+                st.markdown("**Saldo de la cuenta Deepgram**")
+                bal = pd.DataFrame(balances)
+                bal["captured_at"] = pd.to_datetime(bal["captured_at"])
+                bal["saldo"] = bal["amount_usd"].astype(float) * rate
+                fig = px.line(bal, x="captured_at", y="saldo", markers=True)
+                fig.update_traces(line_color=CATEGORICAL_LIGHT[0], line_width=2, marker_size=8,
+                                  hovertemplate=f"%{{x|%d %b %H:%M}}<br><b>$%{{y:,.2f}} {currency}</b><extra></extra>")
+                st.plotly_chart(style_fig(fig, height=260), width="stretch", key="dg_balance")
+        st.caption("Horas y peticiones: exactas de la API de Deepgram. Costo: horas × $/hora real de cada key, "
+                   "medido en el `usd` que Deepgram cobra por petición (si un día no tiene muestra, se usa el día "
+                   "más cercano de la misma key). Solo hay transcripción: sin TTS, Voice Agent ni tokens.")

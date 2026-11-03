@@ -1,12 +1,15 @@
-"""Descarga horas de audio por API key y modelo de Deepgram y calcula el costo con la tabla `rates`.
+"""Horas de audio por API key y modelo de Deepgram, con el costo real que cobra Deepgram.
 
-Fuente: /v1/projects/{id}/usage/breakdown agrupado por accessor (API key) + models + method, por día.
-Deepgram no expone dinero agregado por key: el costo = segundos × tarifa vigente (rates: provider=deepgram,
-unit=audio_seconds, model=<nombre> o '*'). /requests sí trae `usd` por petición, pero con ~10k peticiones/día
-no es viable recorrerlo entero.
+Fuentes:
+- Horas: /v1/projects/{id}/usage/breakdown agrupado por accessor (API key) + models + method, por día (exacto).
+- Costo: cada petición de /requests trae `response.details.usd`. Por key y día se mide $/hora con una muestra
+  de peticiones (Σ usd / Σ duración) y se multiplica por las horas del día. La tarifa real varía por key
+  (funciones como diarización/NER): validado 11-oct→2-nov, Kairoo R7 $0.390/h, R3 $0.260/h, Provident
+  $0.390/h, Pruebas GIo $0.326/h. Si un día no tiene muestra se usa el día más cercano de la misma key, y si
+  la key no tiene ninguna, la tarifa de la tabla `rates`.
 Idempotente: external_id = "breakdown:<día>:<api_key_id>:<modelo>:<method>".
 
-Uso:  python -m integrations.deepgram_sync --days 30 [--dry-run] [--usd-per-min 0.0043]
+Uso:  python -m integrations.deepgram_sync --days 30 [--since 2026-06-01] [--dry-run]
 """
 
 import argparse
@@ -89,12 +92,61 @@ def build_events(results: list[dict], key_names: dict[str, str], model_names: di
     return events
 
 
-def fetch_events(api_key: str, start: date, end: date,
-                 rates: list[Rate]) -> tuple[list[UsageEvent], list[ProviderResource]]:
+REQUEST_PAGES = 4  # páginas de 100 peticiones por key y día para medir $/hora
+
+
+def measure_usd_per_hour(client: httpx.Client, project_id: str, key_id: str, day: date) -> Decimal | None:
+    """$/hora real de una key en un día: Σ usd / Σ duración de sus peticiones (las en curso no traen detalle)."""
+    usd = secs = Decimal(0)
+    start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+    for page in range(REQUEST_PAGES):
+        body = _get(client, f"/v1/projects/{project_id}/requests", {
+            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": (start + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "limit": 100, "page": page, "accessor": key_id,
+        })
+        items = body.get("requests", [])
+        for item in items:
+            if item.get("api_key_id") != key_id:
+                continue
+            details = (item.get("response") or {}).get("details") or {}
+            if details.get("usd") is not None and details.get("duration"):
+                usd += Decimal(str(details["usd"]))
+                secs += Decimal(str(details["duration"]))
+        if len(items) < 100:
+            break
+    return usd / secs * 3600 if secs else None
+
+
+def apply_measured_rates(events: list[UsageEvent], measured: dict[tuple[str, date], Decimal]) -> list[UsageEvent]:
+    """Reemplaza el costo de tabla por horas × $/hora medido (mismo día, o el más cercano de la misma key)."""
+    for event in events:
+        key_id, day = event.metadata.get("deepgram_api_key_id"), event.occurred_at.date()
+        own = [(d, r) for (k, d), r in measured.items() if k == key_id]
+        if not own:
+            event.metadata["cost_source"] = "rates_table"
+            continue
+        rate_day, per_hour = min(own, key=lambda dr: abs((dr[0] - day).days))
+        hours = event.quantities[UsageUnit.AUDIO_SECONDS] / 3600
+        event.cost_usd = (per_hour * hours).quantize(Decimal("0.00000001"))
+        event.metadata.pop("missing_rates", None)
+        event.metadata |= {"cost_source": "requests_usd", "usd_per_hour": float(per_hour),
+                           "rate_from_day": rate_day.isoformat()}
+    return events
+
+
+def fetch_balance(client: httpx.Client, project_id: str) -> float:
+    return sum(float(b.get("amount") or 0) for b in _get(client, f"/v1/projects/{project_id}/balances", {})
+               .get("balances", []) if (b.get("units") or "usd") == "usd")
+
+
+def fetch_events(api_key: str, start: date, end: date, rates: list[Rate],
+                 log=print) -> tuple[list[UsageEvent], list[ProviderResource], float]:
     with httpx.Client(base_url=BASE_URL, headers={"Authorization": f"Token {api_key}"}, timeout=120) as client:
         projects = _get(client, "/v1/projects", {}).get("projects", [])
         events = []
         catalog = []
+        balance = 0.0
         for project in projects:
             pid = project["project_id"]
             key_names, model_names = fetch_lookups(client, pid)
@@ -102,13 +154,27 @@ def fetch_events(api_key: str, start: date, end: date,
                 ("start", start.isoformat()), ("end", end.isoformat()),
                 ("grouping", "accessor"), ("grouping", "models"), ("grouping", "method"),
             ])
-            events += build_events(body.get("results", []), key_names, model_names, rates)
+            project_events = build_events(body.get("results", []), key_names, model_names, rates)
+            todo = sorted({(e.metadata["deepgram_api_key_id"], e.occurred_at.date()) for e in project_events})
+            measured: dict[tuple[str, date], Decimal] = {}
+            for i, (key_id, day) in enumerate(todo, 1):
+                try:
+                    rate = measure_usd_per_hour(client, pid, key_id, day)
+                except httpx.HTTPError as exc:
+                    log(f"  [{i}/{len(todo)}] {day} {key_names.get(key_id, key_id)}: error {type(exc).__name__}")
+                    continue
+                if rate is not None:
+                    measured[(key_id, day)] = rate
+            events += apply_measured_rates(project_events, measured)
+            project_balance = fetch_balance(client, pid)
+            balance += project_balance
+            log(f"Saldo Deepgram ({project.get('name')}): ${project_balance:,.2f} USD")
             catalog += [
                 ProviderResource(provider=Provider.DEEPGRAM, kind=ResourceKind.API_KEY, resource_key=key_id,
                                  name=name or key_id, group_name=project.get("name"))
                 for key_id, name in key_names.items()
             ]
-        return events, catalog
+        return events, catalog, balance
 
 
 def main() -> None:
@@ -137,12 +203,13 @@ def main() -> None:
         rates = get_repositories().rates.list()
 
     end = datetime.now(timezone.utc).date()
-    events, catalog = fetch_events(api_key, args.since or end - timedelta(days=args.days), end, rates)
+    events, catalog, balance = fetch_events(api_key, args.since or end - timedelta(days=args.days), end, rates)
     saved = 0
     if not args.dry_run:
         repos = get_repositories()
         repos.resources.upsert_catalog(catalog)
         saved = repos.usage.upsert_many(events)
+        repos.balances.insert("deepgram", balance)
     print(f"Catálogo: {len(catalog)} API keys")
 
     hours, usd = Counter(), Counter()
