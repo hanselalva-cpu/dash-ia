@@ -49,9 +49,12 @@ class SupabaseBalanceRepository:
                 return 0
             raise
 
-    def purchases(self, provider: str, since: datetime | None = None) -> list[dict]:
+    def purchases(self, provider: str | None = None, since: datetime | None = None) -> list[dict]:
+        """Recargas por API y pagos manuales. provider=None → todos los proveedores."""
         try:
-            q = self.client.table(PURCHASES).select("order_id,created_at,amount_usd,order_type").eq("provider", provider)
+            q = self.client.table(PURCHASES).select("*")
+            if provider:
+                q = q.eq("provider", provider)
             if since:
                 q = q.gte("created_at", since.isoformat())
             return q.order("created_at").execute().data
@@ -59,6 +62,21 @@ class SupabaseBalanceRepository:
             if exc.code == "PGRST205":
                 return []
             raise
+
+    def add_manual_payment(self, provider: str, paid_at: datetime, amount: float, currency: str,
+                           amount_usd: float, note: str | None) -> None:
+        from uuid import uuid4
+
+        self.client.table(PURCHASES).insert({
+            "provider": provider, "order_id": f"manual-{uuid4()}", "created_at": paid_at.isoformat(),
+            "amount_usd": round(amount_usd, 4), "order_type": "manual", "source": "manual",
+            "currency": currency, "amount_original": amount, "note": note or None,
+        }).execute()
+
+    def delete_manual_payment(self, provider: str, order_id: str) -> None:
+        """Solo pagos manuales: las recargas por API se vuelven a descargar en cada sincronización."""
+        (self.client.table(PURCHASES).delete().eq("provider", provider).eq("order_id", order_id)
+         .eq("source", "manual").execute())
 
 
 class DemoBalanceRepository:
@@ -71,5 +89,11 @@ class DemoBalanceRepository:
     def upsert_purchases(self, provider: str, orders: list[dict]) -> int:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
 
-    def purchases(self, provider: str, since: datetime | None = None) -> list[dict]:
+    def purchases(self, provider: str | None = None, since: datetime | None = None) -> list[dict]:
         return []
+
+    def add_manual_payment(self, *args, **kwargs) -> None:
+        raise NotImplementedError("Modo demo: configura Supabase para escribir")
+
+    def delete_manual_payment(self, provider: str, order_id: str) -> None:
+        raise NotImplementedError("Modo demo: configura Supabase para escribir")
