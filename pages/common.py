@@ -12,8 +12,14 @@ PRESETS = ["Mes actual", "Mes anterior", "Últimos 30 días", "Año actual"]
 
 
 @st.cache_resource
-def _repos(config_fingerprint: str) -> Repositories:
+def _repos(config_fingerprint: str, code_version: str) -> Repositories:
     return get_repositories()
+
+
+def _code_version() -> str:
+    """Campos actuales de Repositories. Streamlit Cloud aplica un push sin reiniciar el proceso y
+    st.cache_resource conservaría el objeto creado con el código anterior (p. ej. sin `balances`)."""
+    return ",".join(Repositories.__dataclass_fields__)
 
 
 @st.cache_resource(ttl="10m")
@@ -42,7 +48,7 @@ def repos() -> Repositories:
     from config.settings import config_fingerprint
 
     fingerprint = config_fingerprint()
-    r = _repos(fingerprint)
+    r = _repos(fingerprint, _code_version())
     if not r.demo and (error := _connection_error(fingerprint)):
         st.error(error)
         st.stop()
