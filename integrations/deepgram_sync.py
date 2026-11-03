@@ -140,13 +140,26 @@ def fetch_balance(client: httpx.Client, project_id: str) -> float:
                .get("balances", []) if (b.get("units") or "usd") == "usd")
 
 
+def fetch_purchases(client: httpx.Client, project_id: str) -> list[dict]:
+    """Todas las recargas (órdenes de compra de saldo) del proyecto."""
+    orders, page = [], 0
+    while True:
+        body = _get(client, f"/v1/projects/{project_id}/purchases", {"limit": 100, "page": page})
+        batch = body.get("orders", [])
+        orders += batch
+        if len(batch) < 100:
+            return orders
+        page += 1
+
+
 def fetch_events(api_key: str, start: date, end: date, rates: list[Rate],
-                 log=print) -> tuple[list[UsageEvent], list[ProviderResource], float]:
+                 log=print) -> tuple[list[UsageEvent], list[ProviderResource], float, list[dict]]:
     with httpx.Client(base_url=BASE_URL, headers={"Authorization": f"Token {api_key}"}, timeout=120) as client:
         projects = _get(client, "/v1/projects", {}).get("projects", [])
         events = []
         catalog = []
         balance = 0.0
+        purchases: list[dict] = []
         for project in projects:
             pid = project["project_id"]
             key_names, model_names = fetch_lookups(client, pid)
@@ -168,13 +181,14 @@ def fetch_events(api_key: str, start: date, end: date, rates: list[Rate],
             events += apply_measured_rates(project_events, measured)
             project_balance = fetch_balance(client, pid)
             balance += project_balance
+            purchases += fetch_purchases(client, pid)
             log(f"Saldo Deepgram ({project.get('name')}): ${project_balance:,.2f} USD")
             catalog += [
                 ProviderResource(provider=Provider.DEEPGRAM, kind=ResourceKind.API_KEY, resource_key=key_id,
                                  name=name or key_id, group_name=project.get("name"))
                 for key_id, name in key_names.items()
             ]
-        return events, catalog, balance
+        return events, catalog, balance, purchases
 
 
 def main() -> None:
@@ -203,13 +217,15 @@ def main() -> None:
         rates = get_repositories().rates.list()
 
     end = datetime.now(timezone.utc).date()
-    events, catalog, balance = fetch_events(api_key, args.since or end - timedelta(days=args.days), end, rates)
+    events, catalog, balance, purchases = fetch_events(api_key, args.since or end - timedelta(days=args.days), end, rates)
     saved = 0
     if not args.dry_run:
         repos = get_repositories()
         repos.resources.upsert_catalog(catalog)
         saved = repos.usage.upsert_many(events)
         repos.balances.insert("deepgram", balance)
+        repos.balances.upsert_purchases("deepgram", purchases)
+    print(f"Saldo: ${balance:,.2f} USD · recargas registradas: {len(purchases)}")
     print(f"Catálogo: {len(catalog)} API keys")
 
     hours, usd = Counter(), Counter()

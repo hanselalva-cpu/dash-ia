@@ -42,7 +42,7 @@ COMPONENT_LABEL = {"convai_voice": "Llamada", "convai_llm": "LLM", "convai_voice
 
 
 def fmt(v: float) -> str:
-    return f"${v:,.2f} {currency}"
+    return f"{'-' if v < 0 else ''}${abs(v):,.2f} {currency}"
 
 
 def daily_by_resource(part: pd.DataFrame):
@@ -225,6 +225,44 @@ with tab_dg:
                                         f"{currency}/hora": st.column_config.NumberColumn(format="$%.2f"),
                                         "Seg. por petición": st.column_config.NumberColumn(format="%.1f"),
                                         "%": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)})
+        # --- Recargas y cuadre del periodo ---------------------------------------------------------------
+        purchases = repos().balances.purchases("deepgram")
+        with st.container(border=True):
+            st.markdown("**Recargas y cuadre del periodo**")
+            if not purchases:
+                st.caption("Sin recargas registradas todavía (se guardan en cada sincronización; requiere la migración 009).")
+            else:
+                pur = pd.DataFrame(purchases)
+                pur["created_at"] = pd.to_datetime(pur["created_at"], utc=True)
+                pur["monto"] = pur["amount_usd"].astype(float) * rate
+                in_period = pur[(pur["created_at"] >= pd.Timestamp(start)) & (pur["created_at"] < pd.Timestamp(end))]
+                consumed = part["cost"].sum()
+                recharged = in_period["monto"].sum()
+                period_is_current = end >= pd.Timestamp.now(tz=settings.app_timezone).normalize()
+                current_balance = float(balances[-1]["amount_usd"]) * rate if balances else None
+                cols = st.columns(4)
+                cols[0].metric("Recargado en el periodo", fmt(recharged), f"{len(in_period)} recargas", delta_color="off")
+                cols[1].metric("Consumido en el periodo", fmt(consumed))
+                if current_balance is not None and period_is_current:
+                    initial = current_balance - recharged + consumed
+                    cols[2].metric("Saldo inicial implícito", fmt(initial),
+                                   help="Saldo actual − recargado + consumido en el periodo. Si sabes el saldo real "
+                                        "al inicio, la diferencia contra este valor es lo que no explica el consumo.")
+                    daily = consumed / days
+                    cols[3].metric("Saldo alcanza para", f"{current_balance / daily:,.1f} días" if daily else "—",
+                                   help=f"Saldo actual {fmt(current_balance)} ÷ consumo promedio {fmt(daily)}/día.")
+                else:
+                    cols[2].metric("Recargado − consumido", fmt(recharged - consumed))
+                st.dataframe(
+                    pur.sort_values("created_at", ascending=False).assign(
+                        Fecha=lambda d: d["created_at"].dt.tz_convert(settings.app_timezone).dt.strftime("%d %b %Y %H:%M"),
+                        Tipo=lambda d: d["order_type"].fillna("—"),
+                        **{"En el periodo": lambda d: (d["created_at"] >= pd.Timestamp(start)) & (d["created_at"] < pd.Timestamp(end))},
+                    )[["Fecha", "monto", "Tipo", "En el periodo"]].rename(columns={"monto": f"Monto ({currency})"}),
+                    hide_index=True, width="stretch",
+                    column_config={f"Monto ({currency})": MONEY,
+                                   "En el periodo": st.column_config.CheckboxColumn()})
+
         if len(balances) > 1:
             with st.container(border=True):
                 st.markdown("**Saldo de la cuenta Deepgram**")
