@@ -7,7 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 from config.settings import get_settings
-from pages.common import demo_banner, load_usage, money, period_picker, repos, style_fig, theme_mode, today_local
+from pages.common import billing_alerts_banner, demo_banner, load_usage, money, period_picker, repos, style_fig, theme_mode, today_local
 from services.budget_service import BudgetStatus, evaluate_alert, forecast_month_end
 from services.chart_theme import STATUS, UNASSIGNED, campaign_color_map, display_name
 
@@ -19,6 +19,7 @@ MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agost
 
 st.title("Dashboard")
 demo_banner()
+billing_alerts_banner()
 
 start, end = period_picker()
 campaigns = repos().campaigns.list()

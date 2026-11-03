@@ -3,6 +3,7 @@
 import os
 from datetime import date, datetime, time, timedelta
 
+import pandas as pd
 import streamlit as st
 
 from config.settings import get_settings
@@ -170,3 +171,46 @@ def style_fig(fig, height: int = 380):
 
 def campaign_names() -> dict[str, str]:
     return {str(c.id): c.name for c in repos().campaigns.list()}
+
+
+def billing_alerts():
+    """Alertas de pagos/saldos de todos los proveedores (facturas abiertas y días de saldo)."""
+    from services.billing_alerts import balance_alert, invoice_alert, projected_balance
+
+    tz = get_settings().tz
+    today = today_local()
+    week_start = datetime.combine(today - timedelta(days=7), time.min, tzinfo=tz)
+    week = load_usage(week_start, datetime.combine(today, time.min, tzinfo=tz))
+    daily = (week.groupby("provider")["cost_usd"].sum() / 7).to_dict() if not week.empty else {}
+    bal = repos().balances
+    alerts = []
+    for provider in ("elevenlabs", "openai", "deepgram"):
+        if (a := invoice_alert(provider, bal.open_invoices(provider))):
+            alerts.append(a)
+    history = bal.history("deepgram", datetime.now(tz) - timedelta(days=90))
+    if history and (a := balance_alert("deepgram", float(history[-1]["amount_usd"]), daily.get("deepgram", 0), today)):
+        alerts.append(a)
+    oa = bal.history("openai", datetime.now(tz) - timedelta(days=365))
+    if oa:
+        captured_at = pd.to_datetime(oa[-1]["captured_at"]).to_pydatetime()
+        since = load_usage(captured_at, datetime.now(tz))
+        consumed = since.loc[since["provider"] == "openai", "cost_usd"].sum() if not since.empty else 0.0
+        a = balance_alert("openai", projected_balance(float(oa[-1]["amount_usd"]), consumed), daily.get("openai", 0), today)
+        if a:
+            a.detail += f" Saldo capturado a mano el {captured_at.astimezone(tz):%d %b} menos el consumo desde entonces."
+            alerts.append(a)
+    order = {"critical": 0, "warning": 1, "ok": 2}
+    return sorted(alerts, key=lambda a: order[a.level])
+
+
+def billing_alerts_banner() -> None:
+    """Aviso compacto de pagos/saldos críticos o próximos; enlaza a Facturas."""
+    if repos().demo:
+        return
+    urgent = [a for a in billing_alerts() if a.level != "ok"]
+    if not urgent:
+        return
+    lines = "\n".join(f"- {a.icon} **{a.title}** — {a.detail}" for a in urgent)
+    box = st.error if any(a.level == "critical" for a in urgent) else st.warning
+    box(f"**Pagos y saldos que requieren atención**\n\n{lines}")
+    st.page_link("pages/invoices.py", label="Ir a Facturas y saldos por pagar", icon="🧾")

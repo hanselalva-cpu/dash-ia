@@ -9,15 +9,26 @@ import streamlit as st
 
 from config.settings import get_settings
 from models.schemas import BudgetAlert
-from pages.common import demo_banner, load_usage, repos, today_local
+from pages.common import billing_alerts, demo_banner, load_usage, repos, today_local
 from services.budget_service import evaluate_alert
 from services.chart_theme import STATUS
 
 settings = get_settings()
 CURRENCIES = ["MXN", "USD"] if settings.default_display_currency == "MXN" else ["USD", "MXN"]
 
-st.title("Alertas de presupuesto")
+st.title("Alertas")
 demo_banner()
+
+st.subheader("Pagos y saldos")
+pay_alerts = billing_alerts()
+if not pay_alerts:
+    st.caption("Sin facturas abiertas ni saldos registrados.")
+for a in pay_alerts:
+    box = {"critical": st.error, "warning": st.warning, "ok": st.success}[a.level]
+    box(f"{a.icon} **{a.title}** — {a.detail}")
+st.page_link("pages/invoices.py", label="Facturas y saldos por pagar", icon="🧾")
+
+st.subheader("Presupuesto por campaña")
 st.caption("Define el tope mensual que cada campaña no debe pasar. Al llegar al % de aviso se marca en "
            "naranja; al llegar al tope, en rojo (Dashboard y aquí). Tope vacío o 0 = sin alerta.")
 

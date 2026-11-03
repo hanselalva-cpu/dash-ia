@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from config.settings import get_settings
-from pages.common import demo_banner, load_usage, repos, today_local
+from pages.common import billing_alerts_banner, demo_banner, load_usage, repos, today_local
 
 settings = get_settings()
 currency = settings.default_display_currency
@@ -32,6 +32,7 @@ def usd_and_local(usd: float) -> str:
 
 st.title("Facturas y saldos por pagar")
 demo_banner()
+billing_alerts_banner()
 st.caption("El pago se hace en el portal de cada proveedor (tarjeta / autenticación): esta app no cobra ni guarda "
            "datos de pago. Después de pagar, márcala aquí para que quede en **Pagos** y en el cuadre.")
 
@@ -49,9 +50,6 @@ else:
     with st.container(horizontal=True):
         st.metric("Por pagar", usd_and_local(total_pending), f"{len(pending)} factura(s)", delta_color="off", border=True)
         st.metric("Estado de la cuenta", ACCOUNT_STATUS.get(account, account or "—"), border=True)
-    if account == "past_due" and pending:
-        st.error("La suscripción de ElevenLabs está **vencida**. Si no se confirma el pago, ElevenLabs puede "
-                 "suspender el servicio de los agentes.")
     st.link_button("💳 Pagar en ElevenLabs", BILLING_URLS["elevenlabs"], type="primary")
 
     for inv in invoices:
@@ -98,13 +96,22 @@ else:
         st.metric("Saldo prepagado", usd_and_local(bal), border=True)
         st.metric("Consumo promedio (7 días)", f"${daily_usd:,.2f} USD/día", border=True)
         st.metric("Alcanza para", f"{days_left:,.1f} días" if days_left else "—", border=True)
-    if days_left is not None and days_left < 7:
-        st.warning(f"Al ritmo actual el saldo de Deepgram se acaba en **~{days_left:,.0f} días**. Recarga para evitar "
-                   "cortes, o confirma que la recarga automática esté activa.")
     st.link_button("💳 Recargar en Deepgram", BILLING_URLS["deepgram"])
 
 # --- OpenAI --------------------------------------------------------------------------------------------------
 st.subheader("OpenAI")
-st.caption("La API de OpenAI no expone facturas ni saldo de créditos (solo desde el navegador). Revisa ahí y "
-           "registra los pagos en **Pagos**.")
+st.caption("La API de OpenAI no expone facturas ni saldo de créditos. Captura aquí el saldo que ves en su "
+           "página de facturación: el dashboard le descuenta el consumo diario y avisa cuándo se agota.")
+oa = repos().balances.history("openai", datetime.now(settings.tz) - timedelta(days=365))
+if oa:
+    last = oa[-1]
+    st.caption(f"Último saldo capturado: **${float(last['amount_usd']):,.2f} USD** el "
+               f"{pd.to_datetime(last['captured_at']).tz_convert(settings.app_timezone):%d %b %Y %H:%M}.")
+with st.form("openai_balance"):
+    c1, c2 = st.columns([2, 1], vertical_alignment="bottom")
+    credit = c1.number_input("Saldo de créditos de OpenAI hoy (USD)", min_value=0.0, step=10.0, format="%.2f")
+    if c2.form_submit_button("Guardar saldo", disabled=repos().demo):
+        repos().balances.insert("openai", credit)
+        st.toast("Saldo de OpenAI guardado", icon="✅")
+        st.rerun()
 st.link_button("💳 Facturación de OpenAI", BILLING_URLS["openai"])
