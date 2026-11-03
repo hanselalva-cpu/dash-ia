@@ -207,6 +207,19 @@ def fetch_events(api_key: str, start: datetime, end: datetime) -> tuple[list[Usa
     return events, build_catalog(agents, events)
 
 
+def fetch_open_invoices(api_key: str) -> tuple[list[dict], str | None]:
+    """Facturas abiertas de la suscripción (la API no da id ni fecha) y estado de la cuenta."""
+    with httpx.Client(base_url=BASE_URL, headers={"xi-api-key": api_key}, timeout=60) as client:
+        sub = _get(client, "/v1/user/subscription")
+    invoices = []
+    for i, inv in enumerate(sub.get("open_invoices") or [], 1):
+        cents = inv.get("amount_due_cents") or 0
+        statuses = inv.get("payment_intent_statusses") or [inv.get("payment_intent_status")]
+        invoices.append({"invoice_key": f"{i}-{cents}", "amount_usd": round(cents / 100, 2),
+                         "payment_status": ", ".join(s for s in statuses if s) or None})
+    return invoices, sub.get("status")
+
+
 def main() -> None:
     from collections import Counter
 
@@ -236,6 +249,10 @@ def main() -> None:
         # Reemplaza el rango completo (incluidos registros de métodos anteriores).
         repos.usage.delete_provider_sync(Provider.ELEVENLABS, start, end)
         saved = repos.usage.upsert_many(events)
+        invoices, account_status = fetch_open_invoices(api_key)
+        repos.balances.replace_open_invoices("elevenlabs", invoices, account_status)
+        print(f"Suscripción: {account_status} · facturas abiertas: {len(invoices)} "
+              f"(${sum(i['amount_usd'] for i in invoices):,.2f} USD)")
     print(f"Catálogo: {len(catalog)} agentes")
 
     total = Counter()

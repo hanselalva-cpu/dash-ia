@@ -13,6 +13,7 @@ if require_login():
             st.Page("pages/compare.py", title="Comparativo", icon="⚖️"),
             st.Page("pages/providers.py", title="Proveedores", icon="🧩"),
             st.Page("pages/payments.py", title="Pagos", icon="💰"),
+            st.Page("pages/invoices.py", title="Facturas", icon="🧾"),
             st.Page("pages/campaigns.py", title="Campañas", icon="🎯"),
             st.Page("pages/alerts.py", title="Alertas", icon="🚨"),
             st.Page("pages/api_keys.py", title="API keys y agentes", icon="🔑"),

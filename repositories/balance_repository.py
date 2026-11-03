@@ -7,6 +7,7 @@ from supabase import Client
 
 TABLE = "provider_balances"
 PURCHASES = "provider_purchases"
+OPEN_INVOICES = "provider_open_invoices"
 
 
 class SupabaseBalanceRepository:
@@ -64,19 +65,56 @@ class SupabaseBalanceRepository:
             raise
 
     def add_manual_payment(self, provider: str, paid_at: datetime, amount: float, currency: str,
-                           amount_usd: float, note: str | None) -> None:
+                           amount_usd: float, note: str | None) -> str:
         from uuid import uuid4
 
+        order_id = f"manual-{uuid4()}"
         self.client.table(PURCHASES).insert({
-            "provider": provider, "order_id": f"manual-{uuid4()}", "created_at": paid_at.isoformat(),
+            "provider": provider, "order_id": order_id, "created_at": paid_at.isoformat(),
             "amount_usd": round(amount_usd, 4), "order_type": "manual", "source": "manual",
             "currency": currency, "amount_original": amount, "note": note or None,
         }).execute()
+        return order_id
 
     def delete_manual_payment(self, provider: str, order_id: str) -> None:
         """Solo pagos manuales: las recargas por API se vuelven a descargar en cada sincronización."""
         (self.client.table(PURCHASES).delete().eq("provider", provider).eq("order_id", order_id)
          .eq("source", "manual").execute())
+
+
+    def replace_open_invoices(self, provider: str, invoices: list[dict], account_status: str | None) -> None:
+        """Reemplaza las facturas abiertas del proveedor; conserva la marca de pagada si la factura sigue igual."""
+        try:
+            previous = {r["invoice_key"]: r for r in self.client.table(OPEN_INVOICES).select("*")
+                        .eq("provider", provider).execute().data}
+            self.client.table(OPEN_INVOICES).delete().eq("provider", provider).execute()
+            now = datetime.now(timezone.utc).isoformat()
+            rows = [{"provider": provider, "invoice_key": inv["invoice_key"], "amount_usd": inv["amount_usd"],
+                     "payment_status": inv.get("payment_status"), "account_status": account_status,
+                     "captured_at": now, "paid_order_id": (previous.get(inv["invoice_key"]) or {}).get("paid_order_id")}
+                    for inv in invoices]
+            if rows:
+                self.client.table(OPEN_INVOICES).insert(rows).execute()
+        except APIError as exc:
+            if exc.code == "PGRST205":  # falta migración 011
+                print("AVISO: falta la tabla provider_open_invoices (migración 011); facturas no guardadas")
+                return
+            raise
+
+    def open_invoices(self, provider: str | None = None) -> list[dict]:
+        try:
+            q = self.client.table(OPEN_INVOICES).select("*")
+            if provider:
+                q = q.eq("provider", provider)
+            return q.order("provider").order("invoice_key").execute().data
+        except APIError as exc:
+            if exc.code == "PGRST205":
+                return []
+            raise
+
+    def mark_invoice_paid(self, provider: str, invoice_key: str, order_id: str | None) -> None:
+        (self.client.table(OPEN_INVOICES).update({"paid_order_id": order_id})
+         .eq("provider", provider).eq("invoice_key", invoice_key).execute())
 
 
 class DemoBalanceRepository:
@@ -96,4 +134,13 @@ class DemoBalanceRepository:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
 
     def delete_manual_payment(self, provider: str, order_id: str) -> None:
+        raise NotImplementedError("Modo demo: configura Supabase para escribir")
+
+    def replace_open_invoices(self, provider: str, invoices: list[dict], account_status: str | None) -> None:
+        raise NotImplementedError("Modo demo: configura Supabase para escribir")
+
+    def open_invoices(self, provider: str | None = None) -> list[dict]:
+        return []
+
+    def mark_invoice_paid(self, provider: str, invoice_key: str, order_id: str | None) -> None:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
