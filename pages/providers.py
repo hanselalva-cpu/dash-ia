@@ -184,10 +184,11 @@ with tab_el:
                               hovertemplate=f"%{{label}}<br><b>$%{{value:,.2f}} {currency}</b><extra></extra>")
             st.plotly_chart(style_fig(fig, height=300).update_layout(showlegend=False), width="stretch", key="el_pie")
 
-        st.caption("**Llamada y LLM:** minutos de cada agente × costo por minuto medido en una muestra diaria de "
-                   "conversaciones (coincide con el panel de ElevenLabs a menos de 1 %). **Recargo voz:** cargo de "
-                   "ElevenLabs por usar voces de la Voice Library, que se cobra aparte; se reparte entre los agentes "
-                   "con esa voz según sus minutos. La voz es la configurada hoy en cada agente.")
+        st.caption("**Costo facturable:** créditos que ElevenLabs reporta por agente × $0.000103 por crédito "
+                   "(precio de tus facturas: ago $20,700 y sep $25,549 cuadran a ±0.5 %). **Recargo voz:** cargo por "
+                   "voces de la Voice Library, que se cobra aparte; se reparte entre los agentes con esa voz según "
+                   "sus minutos. El panel de agentes de ElevenLabs muestra un costo menor que el facturado. "
+                   "La voz es la configurada hoy en cada agente.")
 
 # --- Deepgram -------------------------------------------------------------------------------------------------
 with tab_dg:
