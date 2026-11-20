@@ -1,9 +1,11 @@
 """Catálogo de campañas y asignación de recursos (API keys / agentes) de cada proveedor."""
 
 from collections import Counter
+from datetime import datetime, timedelta
 
 import streamlit as st
 
+from config.settings import get_settings
 from models.schemas import Campaign, Provider
 from pages.common import demo_banner, repos
 
@@ -13,6 +15,7 @@ PROVIDER_SECTIONS = [
     (Provider.ELEVENLABS, "Agentes de ElevenLabs"),
 ]
 STATUSES = ["active", "paused", "archived"]
+UNKNOWN = "Unknown Resource"
 
 st.title("Campañas")
 demo_banner()
@@ -23,6 +26,15 @@ resources = repos().resources.list()
 by_id = {r.id: r for r in resources}
 assigned_count = Counter(r.campaign_id for r in resources if r.campaign_id)
 alerts = {a.campaign_id: a for a in repos().alerts.list()}
+
+# Voz de cada agente de ElevenLabs (de los últimos 60 días de uso) y si cobra recargo de Voice Library.
+settings = get_settings()
+voices: dict[str, tuple[str, bool]] = {}
+for e in repos().usage.list(datetime.now(settings.tz) - timedelta(days=60), datetime.now(settings.tz)):
+    if str(e.provider) == "elevenlabs" and e.metadata.get("voice_name"):
+        library = bool(e.metadata.get("voice_library")) or e.metadata.get("component") == "voice_library"
+        prev = voices.get(e.metadata["agent_name"], (None, False))
+        voices[e.metadata["agent_name"]] = (e.metadata["voice_name"], prev[1] or library)
 
 # --- Catálogo ---------------------------------------------------------------------------------------------
 st.dataframe(
@@ -72,7 +84,12 @@ campaign = st.selectbox("Campaña", campaigns, format_func=lambda c: c.name)
 
 def resource_label(rid) -> str:
     r = by_id[rid]
+    if r.provider == Provider.ELEVENLABS and r.resource_key == UNKNOWN:
+        return "Recargo de voz sin agente (Voice Library)"
     extra = f" · {r.group_name}" if r.group_name else ""
+    if r.provider == Provider.ELEVENLABS and r.name in voices:
+        voice, library = voices[r.name]
+        extra += f" · 🎙️ {voice}" + (" (cobra recargo)" if library else "")
     return f"{r.name}{extra}{'' if r.active else ' (inactivo)'}"
 
 
@@ -92,6 +109,10 @@ with st.form(f"edit_{campaign.id}"):
         taken = sum(1 for r in resources if r.provider == provider and r.campaign_id not in (None, campaign.id))
         picked = st.multiselect(label, options, default=current, format_func=resource_label,
                                 help=f"{taken} asignados a otras campañas (no se muestran)" if taken else None)
+        if provider == Provider.ELEVENLABS:
+            st.caption("🎙️ La voz de cada agente va con el agente: su costo de llamada, LLM y **recargo de voz** "
+                       "(Voice Library) se asignan a la campaña del agente, no por separado. \"Recargo de voz sin "
+                       "agente\" son días con recargo sin ningún agente de voz de biblioteca activo.")
         selected.update(picked)
 
     if st.form_submit_button("Guardar", type="primary", disabled=read_only):
@@ -112,6 +133,7 @@ mine = [r for r in resources if r.campaign_id == campaign.id]
 if mine:
     st.dataframe(
         [{"Proveedor": str(r.provider), "Tipo": "Agente" if r.kind == "agent" else "API key",
-          "Nombre": r.name, "Grupo/proyecto": r.group_name} for r in mine],
+          "Nombre": resource_label(r.id), "Voz": voices.get(r.name, (None,))[0],
+          "Grupo/proyecto": r.group_name} for r in mine],
         width="stretch", hide_index=True,
     )
