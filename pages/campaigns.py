@@ -93,6 +93,8 @@ def resource_label(rid) -> str:
     return f"{r.name}{extra}{'' if r.active else ' (inactivo)'}"
 
 
+show_inactive = st.toggle("Mostrar recursos inactivos (sin gasto en 15 días)", value=False)
+
 with st.form(f"edit_{campaign.id}"):
     c1, c2 = st.columns(2)
     name = c1.text_input("Nombre", campaign.name)
@@ -101,7 +103,6 @@ with st.form(f"edit_{campaign.id}"):
 
     st.markdown("**Recursos de la campaña.** Cada recurso pertenece a una sola campaña; "
                 "aquí solo aparecen los libres y los ya asignados a esta.")
-    show_inactive = st.toggle("Mostrar recursos inactivos (sin gasto en 15 días)", value=False)
     selected = set()
     for provider, label in PROVIDER_SECTIONS:
         options = [r.id for r in resources
