@@ -12,9 +12,10 @@ $env:PYTHONIOENCODING = "utf-8"
 Set-Location $root
 
 $failed = @()
-foreach ($module in "openai_sync", "elevenlabs_sync", "deepgram_sync") {
+foreach ($module in "openai_sync", "elevenlabs_sync", "deepgram_sync", "refresh_activity") {
     "[{0:yyyy-MM-dd HH:mm:ss}] ===== $module --days $Days" -f (Get-Date) | Out-File -Append -Encoding utf8 $log
-    & $python -m "integrations.$module" --days $Days 2>&1 | ForEach-Object { "$_" } | Out-File -Append -Encoding utf8 $log
+    $extra = if ($module -eq "refresh_activity") { @() } else { @("--days", $Days) }
+    & $python -m "integrations.$module" @extra 2>&1 | ForEach-Object { "$_" } | Out-File -Append -Encoding utf8 $log
     if ($LASTEXITCODE -ne 0) { $failed += $module }
 }
 

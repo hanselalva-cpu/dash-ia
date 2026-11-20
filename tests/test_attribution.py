@@ -111,3 +111,14 @@ def test_explicit_event_campaign_not_overridden():
     event = _event(Provider.OPENAI, openai_api_key_id="key_A")
     event.campaign_id = other
     assert attribute_campaigns([event], resources)[0].campaign_id == other
+
+
+def test_active_resource_keys_only_with_spend():
+    from decimal import Decimal
+
+    from services.activity import active_resource_keys
+
+    a = _event(Provider.OPENAI, openai_api_key_id="key_A"); a.cost_usd = Decimal("0.5")
+    b = _event(Provider.OPENAI, openai_api_key_id="key_B"); b.cost_usd = Decimal("0")
+    c = _event(Provider.ELEVENLABS, agent_name="Agente"); c.cost_usd = Decimal("1")
+    assert active_resource_keys([a, b, c]) == {("openai", "key_A"), ("elevenlabs", "Agente")}

@@ -81,6 +81,7 @@ f1, f2, f3 = st.columns([2, 2, 3], vertical_alignment="bottom")
 providers = f1.pills("Proveedor", sorted(df["Proveedor"].unique()), selection_mode="multi")
 only_unassigned = f2.toggle("Solo sin campaña")
 only_spend = f2.toggle("Solo con gasto este mes", value=True)
+show_inactive = f2.toggle("Incluir inactivos (sin gasto en 15 días)", value=False)
 search = f3.text_input("Buscar", placeholder="Nombre, proyecto o campaña")
 
 view = df
@@ -90,6 +91,8 @@ if only_unassigned:
     view = view[view["Campaña"] == "— Sin campaña"]
 if only_spend:
     view = view[view[f"Gasto del mes ({currency})"] > 0]
+if not show_inactive:
+    view = view[view["Estado"] == "Activo"]
 if search:
     mask = view[["Nombre", "Proyecto", "Campaña"]].fillna("").apply(
         lambda col: col.str.contains(search, case=False, regex=False)).any(axis=1)

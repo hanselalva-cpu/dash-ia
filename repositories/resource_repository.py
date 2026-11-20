@@ -30,7 +30,8 @@ class SupabaseResourceRepository:
             return 0
         now = datetime.now(timezone.utc).isoformat()
         rows = [
-            r.model_dump(mode="json", exclude={"id", "campaign_id"}) | {"last_synced_at": now}
+            # Sin `active`: lo decide refresh_activity según el gasto reciente (los nuevos entran activos).
+            r.model_dump(mode="json", exclude={"id", "campaign_id", "active"}) | {"last_synced_at": now}
             for r in resources
         ]
         try:
@@ -40,6 +41,11 @@ class SupabaseResourceRepository:
                 print("AVISO: falta la tabla provider_resources (migración 006); catálogo no actualizado")
                 return 0
             raise
+
+    def set_active(self, resource_ids: set[UUID], active: bool) -> None:
+        ids = [str(i) for i in resource_ids]
+        for i in range(0, len(ids), 100):
+            self.client.table(TABLE).update({"active": active}).in_("id", ids[i:i + 100]).execute()
 
     def assign(self, campaign_id: UUID, resource_ids: set[UUID]) -> None:
         """Deja asignados a la campaña exactamente `resource_ids` (quita los que ya no estén)."""
@@ -61,6 +67,9 @@ class DemoResourceRepository:
         return []
 
     def upsert_catalog(self, resources: list[ProviderResource]) -> int:
+        raise NotImplementedError("Modo demo: configura Supabase para escribir")
+
+    def set_active(self, resource_ids: set[UUID], active: bool) -> None:
         raise NotImplementedError("Modo demo: configura Supabase para escribir")
 
     def assign(self, campaign_id: UUID, resource_ids: set[UUID]) -> None:

@@ -101,10 +101,12 @@ with st.form(f"edit_{campaign.id}"):
 
     st.markdown("**Recursos de la campaña.** Cada recurso pertenece a una sola campaña; "
                 "aquí solo aparecen los libres y los ya asignados a esta.")
+    show_inactive = st.toggle("Mostrar recursos inactivos (sin gasto en 15 días)", value=False)
     selected = set()
     for provider, label in PROVIDER_SECTIONS:
         options = [r.id for r in resources
-                   if r.provider == provider and r.campaign_id in (None, campaign.id)]
+                   if r.provider == provider and r.campaign_id in (None, campaign.id)
+                   and (r.active or show_inactive or r.campaign_id == campaign.id)]
         current = [r.id for r in resources if r.provider == provider and r.campaign_id == campaign.id]
         taken = sum(1 for r in resources if r.provider == provider and r.campaign_id not in (None, campaign.id))
         picked = st.multiselect(label, options, default=current, format_func=resource_label,
